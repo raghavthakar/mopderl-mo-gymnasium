@@ -3,11 +3,12 @@ from torch.autograd import Variable
 import pickle
 import numpy as np
 import torch
-import gym
+import mo_gymnasium
+import gymnasium as gym # Import gymnasium for the wrapper
 import json
 from nsga2_tools import *
 
-class NormalizedActions(gym.ActionWrapper):
+class NormalizedActions(gym.ActionWrapper): # Inherit from gymnasium.ActionWrapper
 
     def action(self, action):
         action = (action + 1) / 2  # [-1, 1] => [0, 1]

@@ -2,11 +2,12 @@ import os, sys
 from pathlib import Path
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(ROOT_DIR, ".."))
-import environments
 
 from datetime import datetime
 import numpy as np, os, time, random
-import gym, torch
+import mo_gymnasium as gym
+import mo_gymnasium.envs.mujoco #  Importing this module registers the environments
+import torch
 import argparse
 from parameters import Parameters
 import logging
@@ -15,6 +16,7 @@ import utils
 import wandb
 
 parser = argparse.ArgumentParser()
+# Updated environment choices to reflect mo-gymnasium names
 parser.add_argument('-env', help='Environment Choices: (MO-Swimmer-v2) (MO-HalfCheetah-v2) (MO-Hopper-v2) ' +
                                  '(MO-Walker2d-v2) (MO-Ant-v2)', required=True, type=str)
 parser.add_argument('-seed', help='Random seed to be used', type=int, required=True)
@@ -34,6 +36,15 @@ parser.add_argument('-run_id', help="Specify run id, if not given, get id as len
 parser.add_argument('-save_ckpt', help="Save checkpoint every _ step, 0 for no save", type=int, default=1)
 parser.add_argument('-disable_wandb', action="store_true", default=False)
 parser.add_argument('-boundary_only', action='store_true', default=False)
+
+# Updated map with correct mo-gymnasium environment names and versions
+name_map = {
+    'MO-Swimmer-v2': 'mo-swimmer-v5',
+    'MO-HalfCheetah-v2': 'mo-halfcheetah-v5',
+    'MO-Hopper-v2': 'mo-hopper-v5',
+    'MO-Walker2d-v2': 'mo-walker2d-v5',
+    'MO-Ant-v2': 'mo-ant-v5',
+}
 
 if __name__ == "__main__":
     parameters = Parameters(parser)  # Inject the cla arguments in the parameters object
@@ -58,7 +69,6 @@ if __name__ == "__main__":
         os.mkdir(run_folder)    
 
     if parameters.wandb: wandb.init(project=parameters.env_name, entity="mopderl", id=str(Path(run_folder).name), resume=parameters.checkpoint) 
-    # if parameters.wandb: wandb.init(project=parameters.env_name, entity="mopderl", id=str(Path(run_folder).resolve().parents[0].name), resume=parameters.checkpoint) 
     logging.basicConfig(filename=os.path.join(run_folder, "logger.log"),
                         format=('[%(asctime)s] - '
                                 '[%(levelname)4s]:\t'
@@ -72,8 +82,7 @@ if __name__ == "__main__":
     logger.info("Start time: " + datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
 
     # Create Env
-    env = utils.NormalizedActions(gym.make(parameters.env_name))
-    # env = gym.make(parameters.env_name)
+    env = utils.NormalizedActions(gym.make(name_map[parameters.env_name]))
     parameters.action_dim = env.action_space.shape[0]
     parameters.state_dim = env.observation_space.shape[0]
 
@@ -81,7 +90,6 @@ if __name__ == "__main__":
     parameters.write_params(path=run_folder)
 
     # Seed
-    env.seed(parameters.seed)
     torch.manual_seed(parameters.seed)
     np.random.seed(parameters.seed)
     random.seed(parameters.seed)
@@ -94,7 +102,6 @@ if __name__ == "__main__":
     logger.info("Priority: " + str(parameters.priority))
 
     time_start = time.time()
-
     warm_up_saved = False
 
     while np.sum(agent.num_frames < agent.max_frames).astype(int) > 0:
@@ -102,8 +109,6 @@ if __name__ == "__main__":
         logger.info("\t\tGeneration: " + str(agent.iterations))
         logger.info("************************************************")
         stats_wandb = agent.train_final(logger)
-        # rl_agent_scores = stats['rl_agents_scores']
-        # pareto_first_front_type = stats["pareto_1st_front_type"]
 
         if parameters.wandb and len(stats_wandb):
             current_pareto = stats_wandb.pop("pareto")
@@ -115,44 +120,24 @@ if __name__ == "__main__":
             })
 
         print('#Generation:', agent.iterations, '#Frames:', agent.num_frames,
-              ' ENV:  '+ parameters.env_name, 
-            #   ' Rl_agent_scores:', rl_agent_scores,
-              )
+              ' ENV:  '+ parameters.env_name)
         print()
-        logger.info("\n")
-        logger.info("\n")
+        logger.info("\n\n")
         logger.info("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
-        # logger.info("=>>>>>> Rl_agent_scores " + str(rl_agent_scores))
-        # logger.info("=>>>>>> Pareto_1st_front_type" + str(pareto_first_front_type))
         logger.info("=>>>>>> Num frames: " + str(agent.num_frames))
         logger.info("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
 
         if (parameters.save_ckpt_period > 0 and agent.iterations % parameters.save_ckpt_period == 0) or \
             np.sum(agent.num_frames < agent.max_frames).astype(int) == 0:
             agent.save_info()
-            logger.info("Save info successfully!")
-            logger.info("\n")
-            logger.info("\n")
+            logger.info("Save info successfully!\n\n")
 
         if not warm_up_saved and np.sum(agent.num_frames < parameters.warm_up_frames).astype(int) == 0:
             agent.save_info()
-            logger.info("Save warmup infor successfully!!!")   
-            logger.info("\n")
-            logger.info("\n")
+            logger.info("Save warmup infor successfully!!!\n\n")   
             warm_up_saved = True
-            break
 
         if len(stats_wandb):
             agent.archive.save_info()
         
-
     logger.info("End time: " + datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
-
-
-
-
-
-
-
-
-

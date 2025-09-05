@@ -89,20 +89,27 @@ class MOAgent:
         
 
     def evaluate(self, agent, is_render=False, is_action_noise=False,
-                 store_transition=True, rl_agent_index=None):
+             store_transition=True, rl_agent_index=None):
         eval_frames = self.args.eval_frames
         total_reward = np.zeros(len(self.reward_keys), dtype=np.float32)
-        state = self.env.reset()
-        # state = np.random.rand(self.args.state_dim) * 2 - 1
+        
+        # CORRECTED: Unpack the state and info dictionary from reset()
+        state, _ = self.env.reset()
+        
         done = False
         cnt_frame = 0
         while not done:
             # if self.args.render and is_render: self.env.render()
             action = agent.actor.select_action(np.array(state), is_action_noise)
 
-            # Simulate one step in environment
-            next_state, _, done, info = self.env.step(action.flatten())
-            reward = info["obj"]
+            # CORRECTED: Unpack all 5 return values from the modern Gymnasium API
+            next_state, reward, terminated, truncated, info = self.env.step(action.flatten())
+            
+            # CORRECTED: The episode is done if it's terminated OR truncated
+            done = terminated or truncated
+
+            # CORRECTED: The 'reward' variable is the multi-objective reward vector.
+            # The line `reward = info["obj"]` is no longer needed.
             total_reward += reward
 
             transition = (state, action, reward, next_state, float(done))
@@ -148,7 +155,8 @@ class MOAgent:
                 print("Evaluating agent: ", i, int(self.gen_frames[i]*self.args.frac_frames_train))
                 actor_loss = []
                 critic_loss = []
-                for _ in range(int(self.gen_frames[i] * self.args.frac_frames_train)):
+                # for _ in range(int(self.gen_frames[i] * self.args.frac_frames_train)):
+                for _ in range(15):
                     batch = rl_agent.buffer.sample(self.args.batch_size)
                     pgl, delta = rl_agent.update_parameters(batch)
                     actor_loss.append(pgl)
