@@ -1,0 +1,8 @@
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+    - -r file:/home/raghav/Research/mopderl-env/mopderl/requirements.txt
+prefix: /home/raghav/Research/mopderl-env/

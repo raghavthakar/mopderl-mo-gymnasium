@@ -2,7 +2,7 @@ cffi
 Cython
 fastrand
 glfw
-gym==0.15.3
+mo-gymnasium[mujoco]
 numpy
 pandas
 torch
@@ -10,9 +10,9 @@ torchvision
 scipy
 patchelf
 matplotlib
-pygmo==2.16.1
+pygmo
 opencv-python
 # free-mujoco-py
 wandb
 # mujoco
-mujoco-py<2.2,>=2.1 
+# mujoco-py<2.2,>=2.1 
