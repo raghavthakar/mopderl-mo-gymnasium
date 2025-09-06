@@ -62,7 +62,7 @@ class Archive:
                     self.archive_dict.pop(identity)
                     actor_save_path = os.path.join(self.weight_folder, str(identity)+"state_dict.pkl")
                     self.temp_removing.append(actor_save_path)
-        self.fitness_np = np.clip(all_fitness[first_pareto_front], 0, None)
+        self.fitness_np = all_fitness[first_pareto_front]
         
         hv = calculate_hv(self.fitness_np * (-1))
         sp = calculate_sparsity(self.fitness_np)
