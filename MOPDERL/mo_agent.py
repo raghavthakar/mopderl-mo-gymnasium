@@ -155,8 +155,8 @@ class MOAgent:
                 print("Evaluating agent: ", i, int(self.gen_frames[i]*self.args.frac_frames_train))
                 actor_loss = []
                 critic_loss = []
-                # for _ in range(int(self.gen_frames[i] * self.args.frac_frames_train)):
-                for _ in range(15):
+                for _ in range(int(self.gen_frames[i] * self.args.frac_frames_train)):
+                # for _ in range(15):
                     batch = rl_agent.buffer.sample(self.args.batch_size)
                     pgl, delta = rl_agent.update_parameters(batch)
                     actor_loss.append(pgl)
