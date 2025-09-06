@@ -64,7 +64,8 @@ class Archive:
                     self.temp_removing.append(actor_save_path)
         self.fitness_np = all_fitness[first_pareto_front]
         
-        hv = calculate_hv(self.fitness_np * (-1))
+        # hv = calculate_hv(self.fitness_np * (-1))
+        hv = 808 # NOTE: HV calculation disabled temporarily to find the right reference point.
         sp = calculate_sparsity(self.fitness_np)
         spread_out = -1
         if self.fitness_np.shape[1] == 2:
