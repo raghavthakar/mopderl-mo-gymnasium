@@ -36,6 +36,7 @@ parser.add_argument('-run_id', help="Specify run id, if not given, get id as len
 parser.add_argument('-save_ckpt', help="Save checkpoint every _ step, 0 for no save", type=int, default=1)
 parser.add_argument('-disable_wandb', action="store_true", default=False)
 parser.add_argument('-boundary_only', action='store_true', default=False)
+parser.add_argument('-weight_conditioned', action='store_true', default=False)
 
 # Updated map with correct mo-gymnasium environment names and versions
 name_map = {

@@ -120,6 +120,9 @@ class Parameters:
         self.checkpoint_id = param.checkpoint_id
         self.save_ckpt_period = param.save_ckpt
 
+        # ========================================== Weightt conditioning Params =============================================
+        self.weight_conditioned = param.weight_conditioned
+        
     def write_params(self, path, stdout=True):
         # Dump all the hyper-parameters in a file.
         params = pprint.pformat(vars(self), indent=4)
