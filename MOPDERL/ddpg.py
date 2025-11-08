@@ -35,20 +35,40 @@ class GeneticAgent:
             self.load_info(checkpoint_folder)
             self.actor.train()
 
-    def update_parameters(self, batch, p1, p2, critic):
+    def update_parameters(self, batch, p1, p2, critic, scalar_weight):
         state_batch, _, _, _, _ = batch
 
+        # --- 1. Prepare conditioned state for the critic ---
+        if self.args.weight_conditioned:
+            # Convert weight to a [batch_size, num_objectives] tensor
+            weight_tensor = torch.FloatTensor(scalar_weight).to(self.args.device)
+            weight_batch = weight_tensor.expand(state_batch.shape[0], -1)
+            # Concatenate state and weight
+            critic_state_in = torch.cat([state_batch, weight_batch], dim=1)
+        else:
+            # Use the raw state if not conditioned
+            critic_state_in = state_batch
+
+        # --- 2. Get Q-values from critic using the (potentially) conditioned state ---
+        # Actors p1 and p2 get the *raw* state
         p1_action = p1(state_batch)
         p2_action = p2(state_batch)
-        p1_q = critic(state_batch, p1_action).flatten()
-        p2_q = critic(state_batch, p2_action).flatten()
+        
+        # Critic gets the *conditioned* state
+        p1_q = critic(critic_state_in, p1_action).flatten()
+        p2_q = critic(critic_state_in, p2_action).flatten()
 
+        # --- 3. Filter actions and states ---
         eps = 0.0
         action_batch = torch.cat((p1_action[p1_q - p2_q > eps], p2_action[p2_q - p1_q >= eps])).detach()
+        
+        # The state_batch here is filtered, but remains the *raw* state
         state_batch = torch.cat((state_batch[p1_q - p2_q > eps], state_batch[p2_q - p1_q >= eps]))
+        
+        # The agent's own actor also gets the *raw* state
         actor_action = self.actor(state_batch)
 
-        # Actor Update
+        # --- 4. Actor Update ---
         self.actor_optim.zero_grad()
         sq = (actor_action - action_batch)**2
         policy_loss = torch.sum(sq) + torch.mean(actor_action**2)

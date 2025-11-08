@@ -6,7 +6,7 @@ import fastrand, random
 import numpy as np
 import torch
 
-def distilation_crossover(args, gene1, gene2, selected_critic, focus=False):
+def distilation_crossover(args, gene1, gene2, selected_critic, scalar_weight, focus=False):
     new_agent = ddpg.GeneticAgent(args)
     if not focus:
         new_agent.buffer.add_latest_from(gene1.buffer, args.individual_bs // 2)
@@ -22,7 +22,7 @@ def distilation_crossover(args, gene1, gene2, selected_critic, focus=False):
     for epoch in range(12):
         for i in range(iters):
             batch = new_agent.buffer.sample(batch_size)
-            new_agent.update_parameters(batch, gene1.actor, gene2.actor, selected_critic)
+            new_agent.update_parameters(batch, gene1.actor, gene2.actor, selected_critic, scalar_weight)
             # losses.append(new_agent.update_parameters(batch, gene1.actor, gene2.actor, selected_critic))
     return new_agent
 
@@ -154,7 +154,7 @@ class PDERLTool:
             first, second, _ = fitness_sorted_group[i % len(fitness_sorted_group)]
             if scalared_fitness[first] < scalared_fitness[second]:
                 first, second = second, first
-            clone(distilation_crossover(self.args, pop[first], pop[second], selected_agent.critic), pop[unselected_index])
+            clone(distilation_crossover(self.args, pop[first], pop[second], selected_agent.critic, selected_agent.scalar_weight), pop[unselected_index])
         
         # Crossover for selected offsprings
         for i in offsprings_indices:
@@ -162,7 +162,7 @@ class PDERLTool:
                 others = offsprings_indices.copy()
                 others.remove(i)
                 off_j = random.choice(others)
-                clone(distilation_crossover(self.args, pop[i], pop[off_j]), pop[i])
+                clone(distilation_crossover(self.args, pop[i], pop[off_j], selected_agent.critic, selected_agent.scalar_weight), pop[i])
 
         for i in range(self.each_pop_size):
             if i not in new_elitist_indices:  # Spare the new elitists
