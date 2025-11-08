@@ -219,10 +219,11 @@ class Critic(nn.Module):
 
 
 class DDPG(object):
-    def __init__(self, args, scalar_weight: np.ndarray, checkpoint_folder=None):
+    def __init__(self, args, scalar_weight: np.ndarray, other_weights: np.ndarray, checkpoint_folder=None):
 
         self.args = args
         self.scalar_weight = scalar_weight
+        self.other_weights = other_weights
         self.buffer = replay_memory.ReplayMemory(args.buffer_size, args.device)
 
         self.actor = Actor(args, init=True)

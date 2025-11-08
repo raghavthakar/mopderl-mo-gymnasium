@@ -37,9 +37,11 @@ class MOAgent:
         for i in range(len(scalar_weight_list)):
             for _ in range(self.each_pop_size):
                 self.pop_individual_type.append(i)
-        for weight in scalar_weight_list:
+        for w_idx, weight in enumerate(scalar_weight_list):
             if args.rl_type == "ddpg":
-                self.rl_agents.append(ddpg.DDPG(args, scalar_weight=weight))
+                # Get all elements except w_idx
+                other_weights = np.concatenate((scalar_weight_list[:w_idx], scalar_weight_list[w_idx+1:]), axis=0)
+                self.rl_agents.append(ddpg.DDPG(args, scalar_weight=weight, other_weights=other_weights))
             elif args.rl_type == "td3":
                 self.rl_agents.append(TD3(args, scalar_weight=weight))
             else:
