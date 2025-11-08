@@ -186,7 +186,8 @@ class Critic(nn.Module):
         l1 = 200; l2 = 300
 
         # Construct input interface (Hidden Layer 1)
-        self.w_state_l1 = nn.Linear(args.state_dim, l1)
+        # Alter state input size based on if weight conditioning is required or not
+        self.w_state_l1 = nn.Linear(args.state_dim+args.num_objectives, l1) if args.weight_conditioned==True else nn.Linear(args.state_dim, l1)
         self.w_action_l1 = nn.Linear(args.action_dim, l1)
 
         # Hidden Layer 2
@@ -260,49 +261,111 @@ class DDPG(object):
         return dt.item()
 
     def update_parameters(self, batch):
-        state_batch, action_batch, reward_batch, next_state_batch, done_batch = batch
-        # Scalarize rewards
-        reward_batch = torch.matmul(reward_batch, torch.FloatTensor(np.reshape(self.scalar_weight, (-1, 1))).to(self.args.device))
+            # 1. Unpack and move all batch data to device ONCE
+            state_batch, action_batch, reward_vec, next_state_batch, done_batch = batch
+            
+            state_batch = state_batch.to(self.args.device)
+            action_batch = action_batch.to(self.args.device)
+            reward_vec = reward_vec.to(self.args.device) # This is the reward *vector*
+            next_state_batch = next_state_batch.to(self.args.device)
+            
+            # Handle done mask
+            if self.args.use_done_mask:
+                done_batch = done_batch.to(self.args.device)
+            
+            # Initialise the critic loss to return
+            delta = torch.tensor(0.0)
+            
+            # Load networks to GPU (in case they aren't)
+            self.actor_target.to(self.args.device)
+            self.critic_target.to(self.args.device)
+            self.critic.to(self.args.device)
 
-        # Load everything to GPU if not already
-        self.actor_target.to(self.args.device)
-        self.critic_target.to(self.args.device)
-        self.critic.to(self.args.device)
-        state_batch = state_batch.to(self.args.device)
-        next_state_batch = next_state_batch.to(self.args.device)
-        action_batch = action_batch.to(self.args.device)
-        reward_batch = reward_batch.to(self.args.device)
-        if self.args.use_done_mask: done_batch = done_batch.to(self.args.device)
+            # 2. Create the list of weights to loop over
+            # If not conditioned, this list just has one item: self.scalar_weight
+            # If conditioned, it has all weights. This handles both cases.
+            weight_vectors = np.concatenate(([self.scalar_weight], self.other_weights), axis=0) if self.args.weight_conditioned else [self.scalar_weight]
 
-        # Critic Update
-        next_action_batch = self.actor_target.forward(next_state_batch)
-        next_q = self.critic_target.forward(next_state_batch, next_action_batch)
-        if self.args.use_done_mask: next_q = next_q * (1 - done_batch) #Done mask
-        target_q = reward_batch + (self.gamma * next_q).detach()
+            # --- 3. Critic Update Loop (Generalist Critic) ---
+            for weight_np in weight_vectors:
+                
+                # --- 3a. Prepare inputs for this iteration ---
+                
+                # Convert numpy weight to a
+                # [batch_size, num_objectives] tensor
+                weight_tensor = torch.FloatTensor(weight_np).to(self.args.device)
+                weight_batch = weight_tensor.expand(state_batch.shape[0], -1)
 
-        self.critic_optim.zero_grad()
-        current_q = self.critic.forward(state_batch, action_batch)
-        delta = (current_q - target_q).abs()
-        dt = torch.mean(delta**2)
-        dt.backward()
-        nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
-        self.critic_optim.step()
+                # Scalarize reward using the ORIGINAL reward_vec
+                scalar_reward_batch = torch.matmul(reward_vec, weight_tensor.reshape(-1, 1))
 
-        # Actor Update
-        self.actor_optim.zero_grad()
+                # --- 3b. Condition states based on args (THE CORE REQUEST) ---
+                if self.args.weight_conditioned:
+                    state_in = torch.cat([state_batch, weight_batch], dim=1)
+                    next_state_in = torch.cat([next_state_batch, weight_batch], dim=1)
+                else:
+                    # If not conditioned, just use the original states
+                    state_in = state_batch
+                    next_state_in = next_state_batch
 
-        policy_grad_loss = -(self.critic.forward(state_batch, self.actor.forward(state_batch))).mean()
-        policy_loss = policy_grad_loss
+                # --- 3c. Compute Critic Target ---
+                
+                # Actor *always* gets the raw (non-conditioned) state
+                next_action_batch = self.actor_target.forward(next_state_batch) 
+                
+                with torch.no_grad():
+                    # Target Critic gets the (potentially) conditioned state
+                    next_q = self.critic_target.forward(next_state_in, next_action_batch)
+                    
+                    if self.args.use_done_mask: 
+                        next_q = next_q * (1 - done_batch) #Done mask
+                        
+                    target_q = scalar_reward_batch + (self.gamma * next_q)
 
-        policy_loss.backward()
-        nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
-        self.actor_optim.step()
+                # --- 3d. Compute Critic Loss and Update ---
+                
+                # Critic gets the (potentially) conditioned state
+                current_q = self.critic.forward(state_in, action_batch)
+                delta = (current_q - target_q).abs()
+                dt = torch.mean(delta**2)
+                
+                self.critic_optim.zero_grad()
+                dt.backward()
+                nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
+                self.critic_optim.step()
 
-        soft_update(self.actor_target, self.actor, self.tau)
-        soft_update(self.critic_target, self.critic, self.tau)
+            # --- 4. Actor Update (Specialist Actor) ---
+            self.actor_optim.zero_grad()
 
-        del state_batch, action_batch, reward_batch, next_state_batch, done_batch, next_action_batch, next_q, target_q, current_q, dt
-        return policy_grad_loss.data.cpu().numpy(), delta.data.cpu().numpy()
+            # --- 4a. Condition state for actor's critic (THE CORE REQUEST) ---
+            # We only use the main self.scalar_weight for the actor update
+            if self.args.weight_conditioned:
+                main_weight_tensor = torch.FloatTensor(self.scalar_weight).to(self.args.device)
+                main_weight_batch = main_weight_tensor.expand(state_batch.shape[0], -1)
+                state_for_actor_critic = torch.cat([state_batch, main_weight_batch], dim=1)
+            else:
+                state_for_actor_critic = state_batch
+                
+            # --- 4b. Compute Actor Loss ---
+            
+            # Actor *always* gets the raw state
+            actor_actions = self.actor.forward(state_batch)
+            
+            # Critic gets the state conditioned *only* on the main weight
+            policy_grad_loss = -(self.critic.forward(state_for_actor_critic, actor_actions)).mean()
+            policy_loss = policy_grad_loss
+
+            # --- 4c. Actor Update ---
+            policy_loss.backward()
+            nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+            self.actor_optim.step()
+
+            # --- 5. Soft Update Target Networks ---
+            soft_update(self.actor_target, self.actor, self.tau)
+            soft_update(self.critic_target, self.critic, self.tau)
+            
+            # 'delta' will be from the last iteration of the critic loop
+            return policy_grad_loss.data.cpu().numpy(), delta.data.cpu().numpy()
 
     def save_info(self, folder_path):
         checkpoint = os.path.join(folder_path, "state_dicts.pkl")
