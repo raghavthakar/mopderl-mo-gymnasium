@@ -6,7 +6,7 @@ import torch
 import mo_gymnasium
 import gymnasium as gym # Import gymnasium for the wrapper
 import json
-from nsga2_tools import *
+from .nsga2_tools import *
 
 class NormalizedActions(gym.ActionWrapper): # Inherit from gymnasium.ActionWrapper
 

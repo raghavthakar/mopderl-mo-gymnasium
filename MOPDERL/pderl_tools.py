@@ -1,5 +1,5 @@
-from parameters import Parameters
-import ddpg 
+from .parameters import Parameters
+from . import ddpg 
 from typing import List
 import torch.distributions as dist
 import fastrand, random

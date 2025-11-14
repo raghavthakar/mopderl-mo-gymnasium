@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.nn import functional as F
-from parameters import Parameters
-import replay_memory as replay_memory
-from utils import *
+from .parameters import Parameters
+from . import replay_memory
+from .utils import *
 import numpy as np
 import os
 

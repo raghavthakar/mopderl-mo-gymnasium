@@ -1,6 +1,6 @@
 from collections import Counter
 import numpy as np
-from pderl_tools import distilation_crossover, proximal_mutate, rl_to_evo
+from .pderl_tools import distilation_crossover, proximal_mutate, rl_to_evo
 
 def crowding_distance_sort(indices_in_pareto, fitness, max_point=1e6):
     indices_in_pareto = np.array(indices_in_pareto)
