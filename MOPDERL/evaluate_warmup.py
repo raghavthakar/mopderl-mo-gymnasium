@@ -17,9 +17,9 @@ import mo_gymnasium.envs.mujoco  # Registers the environments
 from pathlib import Path
 
 # --- Import from your existing codebase ---
-from parameters import Parameters
-from ddpg import GeneticAgent
-from utils import NormalizedActions
+from .parameters import Parameters
+from .ddpg import GeneticAgent
+from .utils import NormalizedActions
 
 
 def evaluate_agent(agent, env, parameters, num_evals=10):

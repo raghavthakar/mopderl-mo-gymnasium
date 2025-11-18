@@ -1,9 +1,9 @@
 import pickle
 import numpy as np
-from nsga2_tools import *
+from .nsga2_tools import *
 import os
 import torch
-from utils import calculate_hv, calculate_sparsity
+from .utils import calculate_hv, calculate_sparsity
 import pandas as pd
 
 

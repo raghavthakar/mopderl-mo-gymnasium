@@ -9,10 +9,10 @@ import mo_gymnasium as gym
 import mo_gymnasium.envs.mujoco #  Importing this module registers the environments
 import torch
 import argparse
-from parameters import Parameters
+from .parameters import Parameters
 import logging
-import mo_agent
-import utils
+from . import mo_agent
+from . import utils
 import wandb
 
 parser = argparse.ArgumentParser()
@@ -96,7 +96,7 @@ if __name__ == "__main__":
     random.seed(parameters.seed)
 
     # Create Agent
-    reward_keys = utils.parse_json("reward_keys.json")[parameters.env_name]
+    reward_keys = utils.parse_json("MOPDERL/reward_keys.json")[parameters.env_name]
     agent = mo_agent.MOAgent(parameters, env, reward_keys, run_folder)
     print('Running', parameters.env_name, ' State_dim:', parameters.state_dim, ' Action_dim:', parameters.action_dim)
     logger.info('Running' + str(parameters.env_name) + ' State_dim:' + str(parameters.state_dim) + ' Action_dim:' + str(parameters.action_dim))

@@ -1,12 +1,12 @@
-from parameters import Parameters
+from .parameters import Parameters
 import numpy as np
-import ddpg
-from td3 import TD3
+from . import ddpg
+from .td3 import TD3
 import os, shutil
-from pderl_tools import PDERLTool
-from nsga2_tools import NSGA, nsga2_sort
-from archive import *
-from utils import create_scalar_list
+from .pderl_tools import PDERLTool
+from .nsga2_tools import NSGA, nsga2_sort
+from .archive import *
+from .utils import create_scalar_list
 
 class MOAgent:
     def __init__(self, args: Parameters, env, reward_keys: list, run_folder) -> None:

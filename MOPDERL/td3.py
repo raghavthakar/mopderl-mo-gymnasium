@@ -1,5 +1,5 @@
-from ddpg import *
-from replay_memory import ReplayMemory
+from .ddpg import *
+from .replay_memory import ReplayMemory
 
 class TD3:
     def __init__(self, args, scalar_weight: np.ndarray, checkpoint_folder=None) -> None:
