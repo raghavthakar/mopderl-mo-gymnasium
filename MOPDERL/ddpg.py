@@ -92,7 +92,7 @@ class GeneticAgent:
         checkpoint = os.path.join(folder_path, "state_dicts.pkl")
         buffer_path = os.path.join(folder_path, "buffer.npy")
         self.buffer.load_info(buffer_path)
-        checkpoint_sd = torch.load(checkpoint)
+        checkpoint_sd = torch.load(checkpoint, map_location=self.args.device)
         self.actor.load_state_dict(checkpoint_sd['actor_sd'])
         self.actor_optim.load_state_dict(checkpoint_sd['actor_optim_sd'])
         if 'id' in checkpoint_sd:
@@ -406,7 +406,7 @@ class DDPG(object):
         
     def load_info(self, folder_path):
         checkpoint = os.path.join(folder_path, "state_dicts.pkl")
-        checkpoint_sd = torch.load(checkpoint)
+        checkpoint_sd = torch.load(checkpoint, map_location=self.args.device)
         self.actor.load_state_dict(checkpoint_sd['actor'])
         self.actor_target.load_state_dict(checkpoint_sd['actor_t'])
         self.actor_optim.load_state_dict(checkpoint_sd['actor_op'])
