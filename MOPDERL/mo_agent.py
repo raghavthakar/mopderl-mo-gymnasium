@@ -369,15 +369,40 @@ class MOAgent:
             self.num_games = np.load(f)
             self.trained_frames = np.load(f)
             self.iterations = np.load(f)
+            
+            # 1. Logic that guesses state based on frames
+            # If frames > warm_up_frames, it sets self.warm_up = False
             if np.sum((self.num_frames <= self.args.warm_up_frames).astype(np.int32)) == 0:
                 print(self.num_frames)
                 self.warm_up = False
             
+            # 2. Robust Loading Logic
             if self.warm_up:
+                # If we explicitly know it's warm_up, load the list
                 self.fitness_list = np.load(f)
             else:
-                self.fitness = np.load(f)
-                self.pop_individual_type = list(np.load(f))
+                # We THINK it is MO mode, but the file might be from Warm-Up.
+                try:
+                    # Try to load the MO fitness array
+                    self.fitness = np.load(f)
+                    # Try to load the individual types (this fails if it's a warm-up save)
+                    self.pop_individual_type = list(np.load(f))
+                except EOFError:
+                    print("Warning: Frame count indicates MO phase, but file structure indicates Warm-up phase.")
+                    print("Reverting to Warm-up state to trigger natural transition.")
+                    
+                    # The data we just loaded into 'self.fitness' was actually 'fitness_list'
+                    # So we move it to the correct variable.
+                    self.fitness_list = self.fitness
+                    
+                    # Force warm_up back to True. 
+                    # The main training loop will see frames > limit and trigger flatten_list() naturally.
+                    self.warm_up = True
+                    
+                    # Reset self.fitness to a clean empty state so we don't leave garbage data
+                    self.fitness = np.zeros((self.args.pop_size, self.num_objectives))
+
+        # 3. Load the sub-folders based on the (possibly corrected) warm_up flag
         if self.warm_up:
             wa_folder_path = os.path.join(folder_path, "warm_up")
             self.load_info_warm_up(wa_folder_path)
