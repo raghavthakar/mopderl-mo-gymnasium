@@ -155,13 +155,13 @@ class NSGA:
         for i in range(self.args.max_child):
             dad_idx, mom_idx, type_idx = self.selection_tournament_mo(fitness[:self.pop_size], sorted_pareto_front, pareto_rank, individual_type) 
             selected_agent = self.rl_agents[type_idx]   
-            pop.append(distilation_crossover(self.args, pop[dad_idx], pop[mom_idx], selected_agent.critic))
+            pop.append(distilation_crossover(self.args, pop[dad_idx], pop[mom_idx], selected_agent.critic, selected_agent.scalar_weight))
             individual_type.append(type_idx)
 
         for rl_agent_id, _ in enumerate(self.rl_agents):
             dad_idx = self.tournament_selection_gradient(fitness[:self.pop_size], sorted_pareto_front, pareto_rank)
             selected_agent = self.rl_agents[rl_agent_id]
-            pop.append(distilation_crossover(self.args, pop[dad_idx], selected_agent, selected_agent.critic))
+            pop.append(distilation_crossover(self.args, pop[dad_idx], selected_agent, selected_agent.critic, selected_agent.scalar_weight))
             # pop.append(distilation_crossover(self.args, selected_agent, pop[dad_idx], selected_agent.critic, focus=True))
             individual_type.append(rl_agent_id)
         
