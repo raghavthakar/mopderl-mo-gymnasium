@@ -251,152 +251,178 @@ class DDPG(object):
         self.actor_target = Actor(args, init=True)
         self.actor_optim = Adam(self.actor.parameters(), lr=0.5e-4)
 
-        self.critic = Critic(args)
-        self.critic_target = Critic(args)
-        self.critic_optim = Adam(self.critic.parameters(), lr=0.5e-3)
+        # --- Modified Critic Initialization ---
+        if self.args.multi_critics:
+            # Create a separate critic for each objective (assuming canonical islands e.g. [1,0], [0,1])
+            self.critics = nn.ModuleList([Critic(args) for _ in range(args.num_objectives)])
+            self.critics_target = nn.ModuleList([Critic(args) for _ in range(args.num_objectives)])
+            self.critics_optims = [Adam(c.parameters(), lr=0.5e-3) for c in self.critics]
+            
+            # Sync targets
+            for c, c_t in zip(self.critics, self.critics_target):
+                hard_update(c_t, c)
+        else:
+            # Original Single Critic
+            self.critic = Critic(args)
+            self.critic_target = Critic(args)
+            self.critic_optim = Adam(self.critic.parameters(), lr=0.5e-3)
+            hard_update(self.critic_target, self.critic)
 
         self.gamma = args.gamma; self.tau = self.args.tau
         self.loss = nn.MSELoss()
-
-        hard_update(self.actor_target, self.actor)  # Make sure target is with the same weight
-        hard_update(self.critic_target, self.critic)
 
         if checkpoint_folder is not None:
             self.load_info(checkpoint_folder)
             self.actor.train()
             self.actor_target.train()
-            self.critic.train()
-            self.critic_target.train()
-
-    def td_error(self, state, action, next_state, reward, done):
-        next_action = self.actor_target.forward(next_state)
-        next_q = self.critic_target(next_state, next_action)
-
-        done = 1 if done else 0
-        if self.args.use_done_mask: next_q = next_q * (1 - done)  # Done mask
-        target_q = reward + (self.gamma * next_q)
-
-        current_q = self.critic(state, action)
-        dt = (current_q - target_q).abs()
-        return dt.item()
+            if self.args.multi_critics:
+                for c, ct in zip(self.critics, self.critics_target):
+                    c.train(); ct.train()
+            else:
+                self.critic.train()
+                self.critic_target.train()
 
     def update_parameters(self, batch):
-            # 1. Unpack and move all batch data to device ONCE
-            state_batch, action_batch, reward_vec, next_state_batch, done_batch = batch
+        # Unpack batch and move components to GPU/Device
+        state_batch, action_batch, reward_vec, next_state_batch, done_batch = batch
+        
+        state_batch = state_batch.to(self.args.device)
+        action_batch = action_batch.to(self.args.device)
+        reward_vec = reward_vec.to(self.args.device) 
+        next_state_batch = next_state_batch.to(self.args.device)
+        
+        if self.args.use_done_mask:
+            done_batch = done_batch.to(self.args.device)
+        
+        delta = torch.tensor(0.0)
+        
+        # Ensure target networks are on the correct device before computation
+        self.actor_target.to(self.args.device)
+        if self.args.multi_critics:
+            for c in self.critics: c.to(self.args.device)
+            for c_t in self.critics_target: c_t.to(self.args.device)
+        else:
+            self.critic.to(self.args.device); self.critic_target.to(self.args.device)
+
+        # Prepare list of weights to train on. 
+        # Includes the actor's primary weight + auxiliary weights (other islands) if conditioning is enabled.
+        weight_vectors = np.concatenate(([self.scalar_weight], self.other_weights), axis=0) if self.args.weight_conditioned else [self.scalar_weight]
+
+        # --- Critic Update Loop ---
+        # We iterate through all relevant weight vectors to update the corresponding critic (or the single shared critic).
+        for weight_np in weight_vectors:
             
-            state_batch = state_batch.to(self.args.device)
-            action_batch = action_batch.to(self.args.device)
-            reward_vec = reward_vec.to(self.args.device) # This is the reward *vector*
-            next_state_batch = next_state_batch.to(self.args.device)
-            
-            # Handle done mask
-            if self.args.use_done_mask:
-                done_batch = done_batch.to(self.args.device)
-            
-            # Initialise the critic loss to return
-            delta = torch.tensor(0.0)
-            
-            # Load networks to GPU (in case they aren't)
-            self.actor_target.to(self.args.device)
-            self.critic_target.to(self.args.device)
-            self.critic.to(self.args.device)
-
-            # 2. Create the list of weights to loop over
-            # If not conditioned, this list just has one item: self.scalar_weight
-            # If conditioned, it has all weights. This handles both cases.
-            weight_vectors = np.concatenate(([self.scalar_weight], self.other_weights), axis=0) if self.args.weight_conditioned else [self.scalar_weight]
-
-            # --- 3. Critic Update Loop (Generalist Critic) ---
-            for weight_np in weight_vectors:
-                
-                # --- 3a. Prepare inputs for this iteration ---
-                
-                # Convert numpy weight to a
-                # [batch_size, num_objectives] tensor
-                weight_tensor = torch.FloatTensor(weight_np).to(self.args.device)
-                weight_batch = weight_tensor.expand(state_batch.shape[0], -1)
-
-                # Scalarize reward using the ORIGINAL reward_vec
-                scalar_reward_batch = torch.matmul(reward_vec, weight_tensor.reshape(-1, 1))
-
-                # --- 3b. Condition states based on args (THE CORE REQUEST) ---
-                if self.args.weight_conditioned:
-                    state_in = torch.cat([state_batch, weight_batch], dim=1)
-                    next_state_in = torch.cat([next_state_batch, weight_batch], dim=1)
-                else:
-                    # If not conditioned, just use the original states
-                    state_in = state_batch
-                    next_state_in = next_state_batch
-
-                # --- 3c. Compute Critic Target ---
-                
-                # Actor *always* gets the raw (non-conditioned) state
-                next_action_batch = self.actor_target.forward(next_state_batch) 
-                
-                with torch.no_grad():
-                    # Target Critic gets the (potentially) conditioned state
-                    next_q = self.critic_target.forward(next_state_in, next_action_batch)
-                    
-                    if self.args.use_done_mask: 
-                        next_q = next_q * (1 - done_batch) #Done mask
-                        
-                    target_q = scalar_reward_batch + (self.gamma * next_q)
-
-                # --- 3d. Compute Critic Loss and Update ---
-                
-                # Critic gets the (potentially) conditioned state
-                current_q = self.critic.forward(state_in, action_batch)
-                delta = (current_q - target_q).abs()
-                dt = torch.mean(delta**2)
-                
-                self.critic_optim.zero_grad()
-                dt.backward()
-                nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
-                self.critic_optim.step()
-
-            # --- 4. Actor Update (Specialist Actor) ---
-            self.actor_optim.zero_grad()
-
-            # --- 4a. Condition state for actor's critic (THE CORE REQUEST) ---
-            # We only use the main self.scalar_weight for the actor update
-            if self.args.weight_conditioned:
-                main_weight_tensor = torch.FloatTensor(self.scalar_weight).to(self.args.device)
-                main_weight_batch = main_weight_tensor.expand(state_batch.shape[0], -1)
-                state_for_actor_critic = torch.cat([state_batch, main_weight_batch], dim=1)
+            # 1. Identify which critic network to use for this specific weight vector
+            if self.args.multi_critics:
+                # Map one-hot weight (e.g., [1,0]) to the corresponding index (0) to select the specialist critic
+                obj_idx = np.argmax(weight_np) 
+                curr_critic = self.critics[obj_idx]
+                curr_target_critic = self.critics_target[obj_idx]
+                curr_optim = self.critics_optims[obj_idx]
             else:
-                state_for_actor_critic = state_batch
-                
-            # --- 4b. Compute Actor Loss ---
-            
-            # Actor *always* gets the raw state
-            actor_actions = self.actor.forward(state_batch)
-            
-            # Critic gets the state conditioned *only* on the main weight
-            policy_grad_loss = -(self.critic.forward(state_for_actor_critic, actor_actions)).mean()
-            policy_loss = policy_grad_loss
+                # Fallback to the single generalist critic
+                curr_critic = self.critic
+                curr_target_critic = self.critic_target
+                curr_optim = self.critic_optim
 
-            # --- 4c. Actor Update ---
-            policy_loss.backward()
-            nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
-            self.actor_optim.step()
+            # 2. Prepare Data: Scalarize rewards and Condition States
+            weight_tensor = torch.FloatTensor(weight_np).to(self.args.device)
+            weight_batch = weight_tensor.expand(state_batch.shape[0], -1)
+            
+            # Compute scalar reward: Dot product of reward vector and current weight vector
+            scalar_reward_batch = torch.matmul(reward_vec, weight_tensor.reshape(-1, 1))
 
-            # --- 5. Soft Update Target Networks ---
-            soft_update(self.actor_target, self.actor, self.tau)
+            # Concatenate weight to state if 'weight_conditioned' is True (UVFA style)
+            if self.args.weight_conditioned:
+                state_in = torch.cat([state_batch, weight_batch], dim=1)
+                next_state_in = torch.cat([next_state_batch, weight_batch], dim=1)
+            else:
+                state_in = state_batch
+                next_state_in = next_state_batch
+
+            # 3. Compute Bellman Target
+            # Note: Actor target always receives the raw state, regardless of conditioning
+            next_action_batch = self.actor_target.forward(next_state_batch)
+            
+            with torch.no_grad():
+                # Target critic evaluates (State + Weight, Next Action)
+                next_q = curr_target_critic.forward(next_state_in, next_action_batch)
+                if self.args.use_done_mask: 
+                    next_q = next_q * (1 - done_batch)
+                target_q = scalar_reward_batch + (self.gamma * next_q)
+
+            # 4. Update Critic
+            # Current critic evaluates (State + Weight, Current Action)
+            current_q = curr_critic.forward(state_in, action_batch)
+            delta = (current_q - target_q).abs()
+            dt = torch.mean(delta**2)
+            
+            curr_optim.zero_grad()
+            dt.backward()
+            nn.utils.clip_grad_norm_(curr_critic.parameters(), 10)
+            curr_optim.step()
+
+        # --- Actor Update ---
+        # The actor is updated ONLY against its primary objective (self.scalar_weight).
+        self.actor_optim.zero_grad()
+
+        # 1. Select the critic corresponding to the actor's primary objective
+        if self.args.multi_critics:
+            main_idx = np.argmax(self.scalar_weight)
+            actor_critic = self.critics[main_idx]
+        else:
+            actor_critic = self.critic
+
+        # 2. Prepare the conditioned state for the actor's update
+        # We must manually construct the state with the *primary* weight attached
+        if self.args.weight_conditioned:
+            main_weight_tensor = torch.FloatTensor(self.scalar_weight).to(self.args.device)
+            main_weight_batch = main_weight_tensor.expand(state_batch.shape[0], -1)
+            state_for_actor_critic = torch.cat([state_batch, main_weight_batch], dim=1)
+        else:
+            state_for_actor_critic = state_batch
+            
+        # 3. Compute Policy Loss
+        # Actor generates actions based on raw state
+        actor_actions = self.actor.forward(state_batch)
+        
+        # Critic evaluates the actor's actions using the conditioned state
+        policy_grad_loss = -(actor_critic.forward(state_for_actor_critic, actor_actions)).mean()
+        policy_loss = policy_grad_loss
+
+        policy_loss.backward()
+        nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
+        self.actor_optim.step()
+
+        # --- Soft Update Target Networks ---
+        soft_update(self.actor_target, self.actor, self.tau)
+        
+        if self.args.multi_critics:
+            for c, c_t in zip(self.critics, self.critics_target):
+                soft_update(c_t, c, self.tau)
+        else:
             soft_update(self.critic_target, self.critic, self.tau)
-            
-            # 'delta' will be from the last iteration of the critic loop
-            return policy_grad_loss.data.cpu().numpy(), delta.data.cpu().numpy()
+        
+        return policy_grad_loss.data.cpu().numpy(), delta.data.cpu().numpy()
 
     def save_info(self, folder_path):
         checkpoint = os.path.join(folder_path, "state_dicts.pkl")
-        torch.save({
+        save_dict = {
             'actor': self.actor.state_dict(),
             'actor_t': self.actor_target.state_dict(),
             'actor_op': self.actor_optim.state_dict(),
-            'critic': self.critic.state_dict(),
-            'critic_t': self.critic_target.state_dict(),
-            'critic_op': self.critic_optim.state_dict(),
-        }, checkpoint)
+        }
+        
+        if self.args.multi_critics:
+            save_dict['critics'] = [c.state_dict() for c in self.critics]
+            save_dict['critics_t'] = [c.state_dict() for c in self.critics_target]
+            save_dict['critics_op'] = [op.state_dict() for op in self.critics_optims]
+        else:
+            save_dict['critic'] = self.critic.state_dict()
+            save_dict['critic_t'] = self.critic_target.state_dict()
+            save_dict['critic_op'] = self.critic_optim.state_dict()
+
+        torch.save(save_dict, checkpoint)
         buffer_path = os.path.join(folder_path, "buffer.npy")
         self.buffer.save_info(buffer_path)
         ou_path  = os.path.join(folder_path, "ou.npy")
@@ -410,9 +436,17 @@ class DDPG(object):
         self.actor.load_state_dict(checkpoint_sd['actor'])
         self.actor_target.load_state_dict(checkpoint_sd['actor_t'])
         self.actor_optim.load_state_dict(checkpoint_sd['actor_op'])
-        self.critic.load_state_dict(checkpoint_sd['critic'])
-        self.critic_target.load_state_dict(checkpoint_sd['critic_t'])
-        self.critic_optim.load_state_dict(checkpoint_sd['critic_op'])
+        
+        if self.args.multi_critics:
+            # Assuming args.num_objectives hasn't changed
+            for i in range(len(self.critics)):
+                self.critics[i].load_state_dict(checkpoint_sd['critics'][i])
+                self.critics_target[i].load_state_dict(checkpoint_sd['critics_t'][i])
+                self.critics_optims[i].load_state_dict(checkpoint_sd['critics_op'][i])
+        else:
+            self.critic.load_state_dict(checkpoint_sd['critic'])
+            self.critic_target.load_state_dict(checkpoint_sd['critic_t'])
+            self.critic_optim.load_state_dict(checkpoint_sd['critic_op'])
         buffer_path = os.path.join(folder_path, "buffer.npy")
         self.buffer.load_info(buffer_path)
         ou_path  = os.path.join(folder_path, "ou.npy")
