@@ -7,6 +7,9 @@ import numpy as np
 import torch
 
 def distilation_crossover(args, gene1, gene2, selected_critic, scalar_weight, focus=False):
+    """
+    selected_critic: Passed in as the specific network object (one of the specialists)
+    """
     new_agent = ddpg.GeneticAgent(args)
     if not focus:
         new_agent.buffer.add_latest_from(gene1.buffer, args.individual_bs // 2)
@@ -132,6 +135,16 @@ class PDERLTool:
         index_rank = np.argsort(scalared_fitness)[::-1]
         elitist_indices = index_rank[:self.num_elitists]
 
+        # --- CRITIC SELECTION LOGIC ---
+        # Identify the correct critic to use for distillation based on flags and weight
+        if self.args.multi_critics:
+            # Map weight vector (e.g., [0, 1]) to index (1)
+            obj_idx = np.argmax(selected_agent.scalar_weight)
+            active_critic = selected_agent.critics[obj_idx]
+        else:
+            active_critic = selected_agent.critic
+        # ------------------------------
+
         # Selection step
         offsprings_indices = self.selection_tournament_pderl(index_rank, num_offsprings=len(index_rank) - self.num_elitists, tournament_size=3)
         
@@ -154,7 +167,9 @@ class PDERLTool:
             first, second, _ = fitness_sorted_group[i % len(fitness_sorted_group)]
             if scalared_fitness[first] < scalared_fitness[second]:
                 first, second = second, first
-            clone(distilation_crossover(self.args, pop[first], pop[second], selected_agent.critic, selected_agent.scalar_weight), pop[unselected_index])
+            
+            # Pass the specifically selected 'active_critic'
+            clone(distilation_crossover(self.args, pop[first], pop[second], active_critic, selected_agent.scalar_weight), pop[unselected_index])
         
         # Crossover for selected offsprings
         for i in offsprings_indices:
@@ -162,10 +177,12 @@ class PDERLTool:
                 others = offsprings_indices.copy()
                 others.remove(i)
                 off_j = random.choice(others)
-                clone(distilation_crossover(self.args, pop[i], pop[off_j], selected_agent.critic, selected_agent.scalar_weight), pop[i])
+                
+                # Pass the specifically selected 'active_critic'
+                clone(distilation_crossover(self.args, pop[i], pop[off_j], active_critic, selected_agent.scalar_weight), pop[i])
 
         for i in range(self.each_pop_size):
-            if i not in new_elitist_indices:  # Spare the new elitists
+            if i not in new_elitist_indices:
                 if random.random() < self.args.mutation_prob:
                     proximal_mutate(self.args, pop[i], mag=self.args.mutation_mag)
         return
