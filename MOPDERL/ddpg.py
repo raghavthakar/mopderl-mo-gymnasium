@@ -20,6 +20,79 @@ def hard_update(target, source):
         target_param.data.copy_(param.data)
 
 
+class MOCritic(nn.Module):
+    """
+    A unified facade for the Critic architecture. 
+    It manages whether the agent uses a single conditioned critic or 
+    multiple specialist critics based on the provided arguments.
+    """
+    def __init__(self, args: Parameters):
+        super(MOCritic, self).__init__()
+        self.args = args
+        self.num_objectives = args.num_objectives
+
+        # Enforce exclusivity: strictly separate architectures
+        if self.args.multi_critics and self.args.weight_conditioned:
+            raise ValueError(
+                "Ambiguous Critic Configuration: 'multi_critics' and 'weight_conditioned' "
+                "cannot both be True. Choose one approach."
+            )
+
+        if self.args.multi_critics:
+            # Multi-Critic Mode: One distinct network per objective.
+            # Mapping: Index i in this list corresponds to Objective i.
+            self.specialists = nn.ModuleList([Critic(args) for _ in range(self.num_objectives)])
+            self.mode = "multi"
+        else:
+            # Single Critic Mode: One network for all objectives.
+            # If weight_conditioned is True, the Critic class handles input expansion internally.
+            self.generalist = Critic(args)
+            self.mode = "single"
+
+        self.to(args.device)
+
+    def forward(self, state, action, scalar_weight):
+        """
+        Routes the forward pass to the correct network(s) based on configuration.
+        
+        Args:
+            state: Raw state tensor [batch, state_dim]
+            action: Action tensor [batch, action_dim]
+            scalar_weight: The target scalarisation weight [batch, num_obj] or [num_obj]
+        """
+        # Ensure weight is a tensor for conditioning or indexing
+        if not isinstance(scalar_weight, torch.Tensor):
+            scalar_weight = torch.FloatTensor(scalar_weight).to(self.args.device)
+        
+        # Expand scalar_weight to batch size if necessary
+        if scalar_weight.dim() == 1:
+            scalar_weight = scalar_weight.expand(state.shape[0], -1)
+
+        if self.mode == "multi":
+            # 1. Identify the target objective index from the one-hot weight vector.
+            # Assumption: The weight vector is one-hot (e.g. [0, 1]).
+            # We take the argmax to find the active objective index.
+            # We use the first element of the batch since the batch is uniform for one update.
+            obj_idx = torch.argmax(scalar_weight[0]).item()
+            
+            # 2. Select the specialist corresponding to that objective.
+            active_critic = self.specialists[obj_idx]
+            
+            # 3. Forward pass (Raw State).
+            return active_critic(state, action)
+
+        else:
+            # Single Critic Mode (Conditioned or Standard)
+            if self.args.weight_conditioned:
+                # Concatenate state and weight vector
+                state_in = torch.cat([state, scalar_weight], dim=1)
+            else:
+                # Standard DDPG (Raw State)
+                state_in = state
+            
+            return self.generalist(state_in, action)
+
+
 class GeneticAgent:
     def __init__(self, args: Parameters, checkpoint_folder=None):
         self.args = args
@@ -36,43 +109,43 @@ class GeneticAgent:
             self.actor.train()
 
     def update_parameters(self, batch, p1, p2, critic, scalar_weight):
+        """
+        Updates the actor based on the provided parents and critic.
+        The 'critic' argument is expected to be an instance of MOCritic.
+        """
         state_batch, _, _, _, _ = batch
 
-        # --- 1. Prepare conditioned state for the critic ---
-        if self.args.weight_conditioned:
-            # Convert weight to a [batch_size, num_objectives] tensor
-            weight_tensor = torch.FloatTensor(scalar_weight).to(self.args.device)
-            weight_batch = weight_tensor.expand(state_batch.shape[0], -1)
-            # Concatenate state and weight
-            critic_state_in = torch.cat([state_batch, weight_batch], dim=1)
-        else:
-            # Use the raw state if not conditioned
-            critic_state_in = state_batch
-
-        # --- 2. Get Q-values from critic using the (potentially) conditioned state ---
-        # Actors p1 and p2 get the *raw* state
+        # --- Get Q-values ---
+        # We pass the raw state and scalar_weight to the MOCritic.
+        # The MOCritic handles any necessary concatenation or network selection internally.
+        
+        # Parents act on raw state
         p1_action = p1(state_batch)
         p2_action = p2(state_batch)
         
-        # Critic gets the *conditioned* state
-        p1_q = critic(critic_state_in, p1_action).flatten()
-        p2_q = critic(critic_state_in, p2_action).flatten()
+        # Critic evaluates using the passed scalar_weight context
+        p1_q = critic(state_batch, p1_action, scalar_weight).flatten()
+        p2_q = critic(state_batch, p2_action, scalar_weight).flatten()
 
-        # --- 3. Filter actions and states ---
+        # --- Filter actions and states ---
         eps = 0.0
-        action_batch = torch.cat((p1_action[p1_q - p2_q > eps], p2_action[p2_q - p1_q >= eps])).detach()
+        # Select actions where the respective parent had a higher Q-value
+        mask_p1 = (p1_q - p2_q > eps)
+        mask_p2 = (p2_q - p1_q >= eps)
         
-        # The state_batch here is filtered, but remains the *raw* state
-        state_batch = torch.cat((state_batch[p1_q - p2_q > eps], state_batch[p2_q - p1_q >= eps]))
+        action_batch = torch.cat((p1_action[mask_p1], p2_action[mask_p2])).detach()
+        state_batch_filtered = torch.cat((state_batch[mask_p1], state_batch[mask_p2]))
         
-        # The agent's own actor also gets the *raw* state
-        actor_action = self.actor(state_batch)
+        # --- Actor Update ---
+        # The agent's actor predicts actions on the filtered states
+        actor_action = self.actor(state_batch_filtered)
 
-        # --- 4. Actor Update ---
         self.actor_optim.zero_grad()
+        # Loss: Match the better parent's action + regularization
         sq = (actor_action - action_batch)**2
         policy_loss = torch.sum(sq) + torch.mean(actor_action**2)
         policy_mse = torch.mean(sq)
+        
         policy_loss.backward()
         self.actor_optim.step()
 
@@ -205,9 +278,12 @@ class Critic(nn.Module):
 
         l1 = 200; l2 = 300
 
-        # Construct input interface (Hidden Layer 1)
-        # Alter state input size based on if weight conditioning is required or not
-        self.w_state_l1 = nn.Linear(args.state_dim+args.num_objectives, l1) if args.weight_conditioned==True else nn.Linear(args.state_dim, l1)
+        # Construct input interface
+        # Logic: If weight_conditioned is True, we augment state dim.
+        # If multi_critics is True (and therefore weight_conditioned is False), we use raw state dim.
+        input_dim = args.state_dim + args.num_objectives if args.weight_conditioned else args.state_dim
+        
+        self.w_state_l1 = nn.Linear(input_dim, l1)
         self.w_action_l1 = nn.Linear(args.action_dim, l1)
 
         # Hidden Layer 2
@@ -251,39 +327,33 @@ class DDPG(object):
         self.actor_target = Actor(args, init=True)
         self.actor_optim = Adam(self.actor.parameters(), lr=0.5e-4)
 
-        # --- Modified Critic Initialization ---
+        # --- MOCritic Initialization ---
+        self.critic = MOCritic(args)
+        self.critic_target = MOCritic(args)
+        
+        # --- Optimizer Initialization ---
+        # While MOCritic abstracts the forward pass, DDPG must manage optimizers for training.
         if self.args.multi_critics:
-            # Create a separate critic for each objective (assuming canonical islands e.g. [1,0], [0,1])
-            self.critics = nn.ModuleList([Critic(args) for _ in range(args.num_objectives)])
-            self.critics_target = nn.ModuleList([Critic(args) for _ in range(args.num_objectives)])
-            self.critics_optims = [Adam(c.parameters(), lr=0.5e-3) for c in self.critics]
-            
-            # Sync targets
-            for c, c_t in zip(self.critics, self.critics_target):
-                hard_update(c_t, c)
+            # Create a separate optimizer for each specialist network in the MOCritic
+            self.critics_optims = [Adam(c.parameters(), lr=0.5e-3) for c in self.critic.specialists]
         else:
-            # Original Single Critic
-            self.critic = Critic(args)
-            self.critic_target = Critic(args)
+            # Single optimizer for the generalist network
             self.critic_optim = Adam(self.critic.parameters(), lr=0.5e-3)
-            hard_update(self.critic_target, self.critic)
 
         self.gamma = args.gamma; self.tau = self.args.tau
         self.loss = nn.MSELoss()
+
+        hard_update(self.actor_target, self.actor)
+        hard_update(self.critic_target, self.critic) # MOCritic recursively handles state_dict updates
 
         if checkpoint_folder is not None:
             self.load_info(checkpoint_folder)
             self.actor.train()
             self.actor_target.train()
-            if self.args.multi_critics:
-                for c, ct in zip(self.critics, self.critics_target):
-                    c.train(); ct.train()
-            else:
-                self.critic.train()
-                self.critic_target.train()
+            self.critic.train()
+            self.critic_target.train()
 
     def update_parameters(self, batch):
-        # Unpack batch and move components to GPU/Device
         state_batch, action_batch, reward_vec, next_state_batch, done_batch = batch
         
         state_batch = state_batch.to(self.args.device)
@@ -296,112 +366,73 @@ class DDPG(object):
         
         delta = torch.tensor(0.0)
         
-        # Ensure target networks are on the correct device before computation
         self.actor_target.to(self.args.device)
-        if self.args.multi_critics:
-            for c in self.critics: c.to(self.args.device)
-            for c_t in self.critics_target: c_t.to(self.args.device)
-        else:
-            self.critic.to(self.args.device); self.critic_target.to(self.args.device)
+        self.critic.to(self.args.device)
+        self.critic_target.to(self.args.device)
 
-        # Prepare list of weights to train on. 
-        # Includes the actor's primary weight + auxiliary weights (other islands) if conditioning is enabled.
-        weight_vectors = np.concatenate(([self.scalar_weight], self.other_weights), axis=0) if self.args.weight_conditioned else [self.scalar_weight]
+        # List of weights to train on
+        weight_vectors = np.concatenate(([self.scalar_weight], self.other_weights), axis=0) if (self.args.weight_conditioned or self.args.multi_critics) else [self.scalar_weight]
 
         # --- Critic Update Loop ---
-        # We iterate through all relevant weight vectors to update the corresponding critic (or the single shared critic).
         for weight_np in weight_vectors:
             
-            # 1. Identify which critic network to use for this specific weight vector
-            if self.args.multi_critics:
-                # Map one-hot weight (e.g., [1,0]) to the corresponding index (0) to select the specialist critic
-                obj_idx = np.argmax(weight_np) 
-                curr_critic = self.critics[obj_idx]
-                curr_target_critic = self.critics_target[obj_idx]
-                curr_optim = self.critics_optims[obj_idx]
-            else:
-                # Fallback to the single generalist critic
-                curr_critic = self.critic
-                curr_target_critic = self.critic_target
-                curr_optim = self.critic_optim
-
-            # 2. Prepare Data: Scalarize rewards and Condition States
             weight_tensor = torch.FloatTensor(weight_np).to(self.args.device)
             weight_batch = weight_tensor.expand(state_batch.shape[0], -1)
-            
-            # Compute scalar reward: Dot product of reward vector and current weight vector
+
+            # Scalarize reward
             scalar_reward_batch = torch.matmul(reward_vec, weight_tensor.reshape(-1, 1))
 
-            # Concatenate weight to state if 'weight_conditioned' is True (UVFA style)
-            if self.args.weight_conditioned:
-                state_in = torch.cat([state_batch, weight_batch], dim=1)
-                next_state_in = torch.cat([next_state_batch, weight_batch], dim=1)
+            # Select the correct optimizer for this specific weight context
+            if self.args.multi_critics:
+                obj_idx = np.argmax(weight_np)
+                curr_optim = self.critics_optims[obj_idx]
+                curr_network_params = self.critic.specialists[obj_idx].parameters()
             else:
-                state_in = state_batch
-                next_state_in = next_state_batch
+                curr_optim = self.critic_optim
+                curr_network_params = self.critic.parameters()
 
-            # 3. Compute Bellman Target
-            # Note: Actor target always receives the raw state, regardless of conditioning
+            # --- Compute Target ---
             next_action_batch = self.actor_target.forward(next_state_batch)
             
             with torch.no_grad():
-                # Target critic evaluates (State + Weight, Next Action)
-                next_q = curr_target_critic.forward(next_state_in, next_action_batch)
+                # MOCritic handles routing/conditioning automatically
+                next_q = self.critic_target(next_state_batch, next_action_batch, weight_batch)
+                
                 if self.args.use_done_mask: 
                     next_q = next_q * (1 - done_batch)
                 target_q = scalar_reward_batch + (self.gamma * next_q)
 
-            # 4. Update Critic
-            # Current critic evaluates (State + Weight, Current Action)
-            current_q = curr_critic.forward(state_in, action_batch)
+            # --- Compute Loss & Update ---
+            # MOCritic handles routing/conditioning automatically
+            current_q = self.critic(state_batch, action_batch, weight_batch)
+            
             delta = (current_q - target_q).abs()
             dt = torch.mean(delta**2)
             
             curr_optim.zero_grad()
             dt.backward()
-            nn.utils.clip_grad_norm_(curr_critic.parameters(), 10)
+            nn.utils.clip_grad_norm_(curr_network_params, 10)
             curr_optim.step()
 
         # --- Actor Update ---
-        # The actor is updated ONLY against its primary objective (self.scalar_weight).
         self.actor_optim.zero_grad()
+        
+        # Prepare weight tensor for the actor's primary objective
+        main_weight_tensor = torch.FloatTensor(self.scalar_weight).to(self.args.device)
+        main_weight_batch = main_weight_tensor.expand(state_batch.shape[0], -1)
 
-        # 1. Select the critic corresponding to the actor's primary objective
-        if self.args.multi_critics:
-            main_idx = np.argmax(self.scalar_weight)
-            actor_critic = self.critics[main_idx]
-        else:
-            actor_critic = self.critic
-
-        # 2. Prepare the conditioned state for the actor's update
-        # We must manually construct the state with the *primary* weight attached
-        if self.args.weight_conditioned:
-            main_weight_tensor = torch.FloatTensor(self.scalar_weight).to(self.args.device)
-            main_weight_batch = main_weight_tensor.expand(state_batch.shape[0], -1)
-            state_for_actor_critic = torch.cat([state_batch, main_weight_batch], dim=1)
-        else:
-            state_for_actor_critic = state_batch
-            
-        # 3. Compute Policy Loss
-        # Actor generates actions based on raw state
         actor_actions = self.actor.forward(state_batch)
         
-        # Critic evaluates the actor's actions using the conditioned state
-        policy_grad_loss = -(actor_critic.forward(state_for_actor_critic, actor_actions)).mean()
-        policy_loss = policy_grad_loss
-
-        policy_loss.backward()
+        # MOCritic evaluates: V(s, a, primary_weight)
+        policy_grad_loss = -(self.critic(state_batch, actor_actions, main_weight_batch)).mean()
+        
+        policy_grad_loss.backward()
         nn.utils.clip_grad_norm_(self.actor.parameters(), 10)
         self.actor_optim.step()
 
-        # --- Soft Update Target Networks ---
+        # --- Soft Update ---
         soft_update(self.actor_target, self.actor, self.tau)
-        
-        if self.args.multi_critics:
-            for c, c_t in zip(self.critics, self.critics_target):
-                soft_update(c_t, c, self.tau)
-        else:
-            soft_update(self.critic_target, self.critic, self.tau)
+        soft_update(self.critic_target, self.critic, self.tau)
         
         return policy_grad_loss.data.cpu().numpy(), delta.data.cpu().numpy()
 
@@ -411,15 +442,15 @@ class DDPG(object):
             'actor': self.actor.state_dict(),
             'actor_t': self.actor_target.state_dict(),
             'actor_op': self.actor_optim.state_dict(),
+            # Since MOCritic is an nn.Module, state_dict() automatically saves all sub-modules (lists or single)
+            'critic': self.critic.state_dict(),
+            'critic_t': self.critic_target.state_dict(),
         }
         
+        # Save optimizers manually as they aren't part of the module hierarchy
         if self.args.multi_critics:
-            save_dict['critics'] = [c.state_dict() for c in self.critics]
-            save_dict['critics_t'] = [c.state_dict() for c in self.critics_target]
             save_dict['critics_op'] = [op.state_dict() for op in self.critics_optims]
         else:
-            save_dict['critic'] = self.critic.state_dict()
-            save_dict['critic_t'] = self.critic_target.state_dict()
             save_dict['critic_op'] = self.critic_optim.state_dict()
 
         torch.save(save_dict, checkpoint)
@@ -428,7 +459,6 @@ class DDPG(object):
         ou_path  = os.path.join(folder_path, "ou.npy")
         with open(ou_path, 'wb') as f:
             np.save(f, self.actor.ounoise.state)
-
         
     def load_info(self, folder_path):
         checkpoint = os.path.join(folder_path, "state_dicts.pkl")
@@ -437,16 +467,17 @@ class DDPG(object):
         self.actor_target.load_state_dict(checkpoint_sd['actor_t'])
         self.actor_optim.load_state_dict(checkpoint_sd['actor_op'])
         
+        # Load MOCritic state
+        self.critic.load_state_dict(checkpoint_sd['critic'])
+        self.critic_target.load_state_dict(checkpoint_sd['critic_t'])
+        
+        # Load Optimizers
         if self.args.multi_critics:
-            # Assuming args.num_objectives hasn't changed
-            for i in range(len(self.critics)):
-                self.critics[i].load_state_dict(checkpoint_sd['critics'][i])
-                self.critics_target[i].load_state_dict(checkpoint_sd['critics_t'][i])
-                self.critics_optims[i].load_state_dict(checkpoint_sd['critics_op'][i])
+            for i, op_sd in enumerate(checkpoint_sd['critics_op']):
+                self.critics_optims[i].load_state_dict(op_sd)
         else:
-            self.critic.load_state_dict(checkpoint_sd['critic'])
-            self.critic_target.load_state_dict(checkpoint_sd['critic_t'])
             self.critic_optim.load_state_dict(checkpoint_sd['critic_op'])
+
         buffer_path = os.path.join(folder_path, "buffer.npy")
         self.buffer.load_info(buffer_path)
         ou_path  = os.path.join(folder_path, "ou.npy")
@@ -461,7 +492,6 @@ def fanin_init(size, fanin=None):
 def actfn_none(inp): return inp
 
 class LayerNorm(nn.Module):
-
     def __init__(self, features, eps=1e-6):
         super().__init__()
         self.gamma = nn.Parameter(torch.ones(features))
@@ -474,7 +504,6 @@ class LayerNorm(nn.Module):
         return self.gamma * (x - mean) / (std + self.eps) + self.beta
 
 class OUNoise:
-
     def __init__(self, action_dimension, scale=0.3, mu=0, theta=0.15, sigma=0.2):
         self.action_dimension = action_dimension
         self.scale = scale

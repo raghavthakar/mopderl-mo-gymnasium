@@ -8,7 +8,11 @@ import torch
 
 def distilation_crossover(args, gene1, gene2, selected_critic, scalar_weight, focus=False):
     """
-    selected_critic: Passed in as the specific network object (one of the specialists)
+    Performs crossover by distilling the policy of parents into a new agent.
+    
+    Args:
+        selected_critic: The MOCritic facade instance from the island agent.
+        scalar_weight: The scalarization vector used to condition/route the critic.
     """
     new_agent = ddpg.GeneticAgent(args)
     if not focus:
@@ -21,12 +25,14 @@ def distilation_crossover(args, gene1, gene2, selected_critic, scalar_weight, fo
     ddpg.hard_update(new_agent.actor, gene2.actor)
     batch_size = min(128, len(new_agent.buffer))
     iters = len(new_agent.buffer) // batch_size
-    # losses = []
+
     for epoch in range(12):
         for i in range(iters):
             batch = new_agent.buffer.sample(batch_size)
+            # We pass the MOCritic facade and the weight. The GeneticAgent.update_parameters 
+            # method will use the facade to route the input correctly.
             new_agent.update_parameters(batch, gene1.actor, gene2.actor, selected_critic, scalar_weight)
-            # losses.append(new_agent.update_parameters(batch, gene1.actor, gene2.actor, selected_critic))
+            
     return new_agent
 
 def rl_to_evo(rl_agent, evo_net):
@@ -59,8 +65,6 @@ def proximal_mutate(args, gene, mag, need_clone=False):
     # initial perturbation
     normal = dist.Normal(torch.zeros_like(params), torch.ones_like(params) * mag)
     delta = normal.sample()
-    # uniform = delta.clone().detach().data.uniform_(0, 1)
-    # delta[uniform > 0.1] = 0.0
 
     # we want to calculate a jacobian of derivatives of each output's sensitivity to each parameter
     jacobian = torch.zeros(num_outputs, tot_size).to(args.device)
@@ -134,16 +138,7 @@ class PDERLTool:
         scalared_fitness = np.dot(fitness, selected_agent.scalar_weight)
         index_rank = np.argsort(scalared_fitness)[::-1]
         elitist_indices = index_rank[:self.num_elitists]
-
-        # --- CRITIC SELECTION LOGIC ---
-        # Identify the correct critic to use for distillation based on flags and weight
-        if self.args.multi_critics:
-            # Map weight vector (e.g., [0, 1]) to index (1)
-            obj_idx = np.argmax(selected_agent.scalar_weight)
-            active_critic = selected_agent.critics[obj_idx]
-        else:
-            active_critic = selected_agent.critic
-        # ------------------------------
+        active_critic = selected_agent.critic
 
         # Selection step
         offsprings_indices = self.selection_tournament_pderl(index_rank, num_offsprings=len(index_rank) - self.num_elitists, tournament_size=3)
@@ -167,8 +162,6 @@ class PDERLTool:
             first, second, _ = fitness_sorted_group[i % len(fitness_sorted_group)]
             if scalared_fitness[first] < scalared_fitness[second]:
                 first, second = second, first
-            
-            # Pass the specifically selected 'active_critic'
             clone(distilation_crossover(self.args, pop[first], pop[second], active_critic, selected_agent.scalar_weight), pop[unselected_index])
         
         # Crossover for selected offsprings
@@ -177,12 +170,10 @@ class PDERLTool:
                 others = offsprings_indices.copy()
                 others.remove(i)
                 off_j = random.choice(others)
-                
-                # Pass the specifically selected 'active_critic'
                 clone(distilation_crossover(self.args, pop[i], pop[off_j], active_critic, selected_agent.scalar_weight), pop[i])
 
         for i in range(self.each_pop_size):
-            if i not in new_elitist_indices:
+            if i not in new_elitist_indices:  # Spare the new elitists
                 if random.random() < self.args.mutation_prob:
                     proximal_mutate(self.args, pop[i], mag=self.args.mutation_mag)
         return
