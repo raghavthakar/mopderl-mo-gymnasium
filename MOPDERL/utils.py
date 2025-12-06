@@ -127,21 +127,6 @@ def compare_delta(fitness1, fitness2):
 
 
 def create_scalar_list(n_objs, boundary_only=False):
-    result = []
-    def generate_bi_backtrack(n, res):
-        for val in range(2):
-            res.append(val)
-            if len(res) == n:
-                result.append(copy(res))
-            else:
-                generate_bi_backtrack(n, res)
-            res.pop(-1)
-    generate_bi_backtrack(n_objs, [])
-    result = np.array(result[1:])
-    order = np.argsort(np.sum(result, axis=-1))
-    result = result[order]
-    row_sum = np.reshape(np.sum(result, axis=-1), (result.shape[0], 1))
-    result = result/row_sum
-    if boundary_only:
-        result = result[:n_objs]
-    return result
+    return np.eye(n_objs)
+    if not boundary_only:
+        raise ValueError("Non-boundary is unsupported.")

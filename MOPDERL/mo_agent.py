@@ -32,7 +32,7 @@ class MOAgent:
         #         raise NotImplementedError("Unknown rl agent type, must be ddpg or td3, got " + args.rl_type)
         
         self.each_pop_size = int(args.pop_size/args.num_rl_agents)
-        scalar_weight_list = create_scalar_list(self.num_objectives, self.args.boundary_only)
+        scalar_weight_list = create_scalar_list(self.num_objectives, self.args.boundary_only) #NOTE: obj_num can be recovered via argmax on the one-hot vector
         self.pop_individual_type = []
         for i in range(len(scalar_weight_list)):
             for _ in range(self.each_pop_size):
