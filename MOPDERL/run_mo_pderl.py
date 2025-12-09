@@ -37,6 +37,7 @@ parser.add_argument('-save_ckpt', help="Save checkpoint every _ step, 0 for no s
 parser.add_argument('-disable_wandb', action="store_true", default=False)
 parser.add_argument('-boundary_only', action='store_true', default=False)
 parser.add_argument('-weight_conditioned', action='store_true', default=False)
+parser.add_argument('-secondary_critics', action='store_true', default=False)
 
 # Updated map with correct mo-gymnasium environment names and versions
 name_map = {

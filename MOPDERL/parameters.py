@@ -122,6 +122,7 @@ class Parameters:
 
         # ========================================== Weightt conditioning Params =============================================
         self.weight_conditioned = param.weight_conditioned
+        self.secondary_critics = param.secondary_critics
         
     def write_params(self, path, stdout=True):
         # Dump all the hyper-parameters in a file.
