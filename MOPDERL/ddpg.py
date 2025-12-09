@@ -255,11 +255,21 @@ class DDPG(object):
         self.critic_target = Critic(args)
         self.critic_optim = Adam(self.critic.parameters(), lr=0.5e-3)
 
-        self.gamma = args.gamma; self.tau = self.args.tau
-        self.loss = nn.MSELoss()
-
         hard_update(self.actor_target, self.actor)  # Make sure target is with the same weight
         hard_update(self.critic_target, self.critic)
+        
+        # secondary critics for learning value functions for self.other_weights
+        if args.secondary_critics:
+            self.sec_critics = [Critic(args) for _ in range(len(other_weights))]
+            self.sec_critics_target = [Critic(args) for _ in range(len(other_weights))]
+            self.sec_critics_optim = [Adam(self.sec_critics[i].parameters(), lr=0.5e-3) for i in range(len(self.sec_critics))]
+
+            # load target critic with critic weights
+            for i in range(len(self.sec_critics)):
+                hard_update(self.sec_critics_target[i], self.sec_critics[i])
+
+        self.gamma = args.gamma; self.tau = self.args.tau
+        self.loss = nn.MSELoss()
 
         if checkpoint_folder is not None:
             self.load_info(checkpoint_folder)
@@ -267,6 +277,11 @@ class DDPG(object):
             self.actor_target.train()
             self.critic.train()
             self.critic_target.train()
+
+            if self.args.secondary_critics:
+                for i in range(len(self.sec_critics)):
+                    self.sec_critics[i].train()
+                    self.sec_critics_target[i].train()
 
     def td_error(self, state, action, next_state, reward, done):
         next_action = self.actor_target.forward(next_state)
@@ -304,10 +319,10 @@ class DDPG(object):
             # 2. Create the list of weights to loop over
             # If not conditioned, this list just has one item: self.scalar_weight
             # If conditioned, it has all weights. This handles both cases.
-            weight_vectors = np.concatenate(([self.scalar_weight], self.other_weights), axis=0) if self.args.weight_conditioned else [self.scalar_weight]
+            weight_vectors = np.concatenate(([self.scalar_weight], self.other_weights), axis=0) if (self.args.weight_conditioned or self.args.secondary_critics) else [self.scalar_weight]
 
             # --- 3. Critic Update Loop (Generalist Critic) ---
-            for weight_np in weight_vectors:
+            for w_idx, weight_np in enumerate(weight_vectors):
                 
                 # --- 3a. Prepare inputs for this iteration ---
                 
@@ -335,7 +350,10 @@ class DDPG(object):
                 
                 with torch.no_grad():
                     # Target Critic gets the (potentially) conditioned state
-                    next_q = self.critic_target.forward(next_state_in, next_action_batch)
+                    if w_idx == 0:
+                        next_q = self.critic_target.forward(next_state_in, next_action_batch)
+                    else:
+                        next_q = self.sec_critics_target[w_idx-1].forward(next_state_in, next_action_batch)
                     
                     if self.args.use_done_mask: 
                         next_q = next_q * (1 - done_batch) #Done mask
@@ -345,14 +363,20 @@ class DDPG(object):
                 # --- 3d. Compute Critic Loss and Update ---
                 
                 # Critic gets the (potentially) conditioned state
-                current_q = self.critic.forward(state_in, action_batch)
+                current_q = self.critic.forward(state_in, action_batch) if w_idx==0 else self.sec_critics[w_idx-1].forward(state_in, action_batch)
                 delta = (current_q - target_q).abs()
                 dt = torch.mean(delta**2)
                 
-                self.critic_optim.zero_grad()
-                dt.backward()
-                nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
-                self.critic_optim.step()
+                if w_idx == 0:
+                    self.critic_optim.zero_grad()
+                    dt.backward()
+                    nn.utils.clip_grad_norm_(self.critic.parameters(), 10)
+                    self.critic_optim.step()
+                else:
+                    self.sec_critics_optim[w_idx-1].zero_grad()
+                    dt.backward()
+                    nn.utils.clip_grad_norm_(self.sec_critics[w_idx-1].parameters(), 10)
+                    self.sec_critics_optim[w_idx-1].step()
 
             # --- 4. Actor Update (Specialist Actor) ---
             self.actor_optim.zero_grad()
@@ -372,6 +396,7 @@ class DDPG(object):
             actor_actions = self.actor.forward(state_batch)
             
             # Critic gets the state conditioned *only* on the main weight
+            # Only the primary critics is used to update the actor
             policy_grad_loss = -(self.critic.forward(state_for_actor_critic, actor_actions)).mean()
             policy_loss = policy_grad_loss
 
@@ -383,6 +408,10 @@ class DDPG(object):
             # --- 5. Soft Update Target Networks ---
             soft_update(self.actor_target, self.actor, self.tau)
             soft_update(self.critic_target, self.critic, self.tau)
+
+            if self.args.secondary_critics:
+                for i in range(len(self.sec_critics)):
+                    soft_update(self.sec_critics_target[i], self.sec_critics[i], self.tau)
             
             # 'delta' will be from the last iteration of the critic loop
             return policy_grad_loss.data.cpu().numpy(), delta.data.cpu().numpy()
@@ -396,6 +425,9 @@ class DDPG(object):
             'critic': self.critic.state_dict(),
             'critic_t': self.critic_target.state_dict(),
             'critic_op': self.critic_optim.state_dict(),
+            'sec_critics': [c.state_dict() for c in self.sec_critics],
+            'sec_critics_t': [c_t.state_dict() for c_t in self.sec_critics_target],
+            'sec_critics_op': [c_o.state_dict() for c_o in self.sec_critics_optim],
         }, checkpoint)
         buffer_path = os.path.join(folder_path, "buffer.npy")
         self.buffer.save_info(buffer_path)
@@ -413,6 +445,10 @@ class DDPG(object):
         self.critic.load_state_dict(checkpoint_sd['critic'])
         self.critic_target.load_state_dict(checkpoint_sd['critic_t'])
         self.critic_optim.load_state_dict(checkpoint_sd['critic_op'])
+        for i in range(len(self.sec_critics)):
+            self.sec_critics[i].load_state_dict(checkpoint_sd['sec_critics'][i])
+            self.sec_critics_target[i].load_state_dict(checkpoint_sd['sec_critics_t'][i])
+            self.sec_critics_optim[i].load_state_dict(checkpoint_sd['sec_critics_op'][i])
         buffer_path = os.path.join(folder_path, "buffer.npy")
         self.buffer.load_info(buffer_path)
         ou_path  = os.path.join(folder_path, "ou.npy")
