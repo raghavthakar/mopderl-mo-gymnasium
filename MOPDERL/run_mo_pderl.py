@@ -95,6 +95,7 @@ if __name__ == "__main__":
     torch.manual_seed(parameters.seed)
     np.random.seed(parameters.seed)
     random.seed(parameters.seed)
+    env.reset(seed=parameters.seed)
 
     # Create Agent
     reward_keys = utils.parse_json("MOPDERL/reward_keys.json")[parameters.env_name]
