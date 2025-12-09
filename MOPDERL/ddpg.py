@@ -418,17 +418,27 @@ class DDPG(object):
 
     def save_info(self, folder_path):
         checkpoint = os.path.join(folder_path, "state_dicts.pkl")
-        torch.save({
-            'actor': self.actor.state_dict(),
-            'actor_t': self.actor_target.state_dict(),
-            'actor_op': self.actor_optim.state_dict(),
-            'critic': self.critic.state_dict(),
-            'critic_t': self.critic_target.state_dict(),
-            'critic_op': self.critic_optim.state_dict(),
-            'sec_critics': [c.state_dict() for c in self.sec_critics],
-            'sec_critics_t': [c_t.state_dict() for c_t in self.sec_critics_target],
-            'sec_critics_op': [c_o.state_dict() for c_o in self.sec_critics_optim],
-        }, checkpoint)
+        if self.args.secondary_critics:
+            torch.save({
+                'actor': self.actor.state_dict(),
+                'actor_t': self.actor_target.state_dict(),
+                'actor_op': self.actor_optim.state_dict(),
+                'critic': self.critic.state_dict(),
+                'critic_t': self.critic_target.state_dict(),
+                'critic_op': self.critic_optim.state_dict(),
+                'sec_critics': [c.state_dict() for c in self.sec_critics],
+                'sec_critics_t': [c_t.state_dict() for c_t in self.sec_critics_target],
+                'sec_critics_op': [c_o.state_dict() for c_o in self.sec_critics_optim],
+            }, checkpoint)
+        else:
+            torch.save({
+                'actor': self.actor.state_dict(),
+                'actor_t': self.actor_target.state_dict(),
+                'actor_op': self.actor_optim.state_dict(),
+                'critic': self.critic.state_dict(),
+                'critic_t': self.critic_target.state_dict(),
+                'critic_op': self.critic_optim.state_dict(),
+            }, checkpoint)
         buffer_path = os.path.join(folder_path, "buffer.npy")
         self.buffer.save_info(buffer_path)
         ou_path  = os.path.join(folder_path, "ou.npy")
@@ -445,10 +455,11 @@ class DDPG(object):
         self.critic.load_state_dict(checkpoint_sd['critic'])
         self.critic_target.load_state_dict(checkpoint_sd['critic_t'])
         self.critic_optim.load_state_dict(checkpoint_sd['critic_op'])
-        for i in range(len(self.sec_critics)):
-            self.sec_critics[i].load_state_dict(checkpoint_sd['sec_critics'][i])
-            self.sec_critics_target[i].load_state_dict(checkpoint_sd['sec_critics_t'][i])
-            self.sec_critics_optim[i].load_state_dict(checkpoint_sd['sec_critics_op'][i])
+        if self.args.secondary_critics:
+            for i in range(len(self.sec_critics)):
+                self.sec_critics[i].load_state_dict(checkpoint_sd['sec_critics'][i])
+                self.sec_critics_target[i].load_state_dict(checkpoint_sd['sec_critics_t'][i])
+                self.sec_critics_optim[i].load_state_dict(checkpoint_sd['sec_critics_op'][i])
         buffer_path = os.path.join(folder_path, "buffer.npy")
         self.buffer.load_info(buffer_path)
         ou_path  = os.path.join(folder_path, "ou.npy")
