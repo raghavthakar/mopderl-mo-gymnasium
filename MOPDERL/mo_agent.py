@@ -1,5 +1,7 @@
 from .parameters import Parameters
 import numpy as np
+import random
+import torch
 from . import ddpg
 from .td3 import TD3
 import os, shutil
@@ -46,7 +48,11 @@ class MOAgent:
                 self.rl_agents.append(TD3(args, scalar_weight=weight))
             else:
                 raise NotImplementedError("Unknown rl agent type, must be ddpg or td3, got " + args.rl_type)
-
+        
+        # reseed to ensure identical population inits across runs
+        torch.manual_seed(args.seed + 100) 
+        np.random.seed(args.seed + 100)
+        random.seed(args.seed + 100)
 
         self.max_frames = args.max_frames
         self.num_frames = np.zeros(args.num_rl_agents)
