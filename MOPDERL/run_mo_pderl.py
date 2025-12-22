@@ -45,7 +45,7 @@ name_map = {
     'MO-HalfCheetah-v2': 'mo-halfcheetah-v5',
     'MO-Hopper-v2': 'mo-hopper-v5',
     'MO-Walker2d-v2': 'mo-walker2d-v5',
-    'MO-Ant-v2': 'mo-ant-v5',
+    'MO-Ant-v2': 'mo-ant-2obj-v5',
 }
 
 if __name__ == "__main__":
