@@ -43,7 +43,7 @@ parser.add_argument('-secondary_critics', action='store_true', default=False)
 name_map = {
     'MO-Swimmer-v2': 'mo-swimmer-v5',
     'MO-HalfCheetah-v2': 'mo-halfcheetah-v5',
-    'MO-Hopper-v2': 'mo-hopper-v5',
+    'MO-Hopper-v2': 'mo-hopper-2obj-v5',
     'MO-Walker2d-v2': 'mo-walker2d-v5',
     'MO-Ant-v2': 'mo-ant-2obj-v5',
 }
